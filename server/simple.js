@@ -45,7 +45,7 @@ router.get("/index", (req, res) => {
   <button type="submit">上传</button>
 </form>`);
 });
-router.post("/postFile", upload.single("fileName"), (req, res, next) => {
+router.post("/postFile", upload.single("chunk"), (req, res, next) => {
   res.json({
     file: req.file,
   });

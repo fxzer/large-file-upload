@@ -17,5 +17,21 @@ const onUpload = (e) => {
 </script>
 
 <template>
-  <input type="file" @change="onUpload">
+  <div class="input-wrap">
+    <h2>简单上传</h2>
+    <input type="file" @change="onUpload"> 
+  </div>
 </template>
+<style scoped lang="scss">
+.input-wrap{
+  h2{
+    text-align: center;
+    margin-bottom: 50px;
+  }
+   display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    height: 100vh;  
+}
+</style>

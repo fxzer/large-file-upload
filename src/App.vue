@@ -1,9 +1,9 @@
 <script setup>
-import SimpleUpload from './components/SimpleUpload.vue'
+import Home from './views/Home.vue'
 </script>
 
 <template>
-  <SimpleUpload  />
+  <Home  />
 </template>
 
 <style scoped>
