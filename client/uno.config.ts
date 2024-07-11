@@ -3,7 +3,6 @@ import {
   presetAttributify,
   presetIcons,
   presetUno,
-  presetWebFonts,
 } from 'unocss'
 
 export default defineConfig({
@@ -18,21 +17,6 @@ export default defineConfig({
     [/^wh-(.+)$/, ([, c]) => `w-${c}  h-${c}`],
   ],
   rules: [
-    [
-      /^clamp-(\d+)$/,
-      ([, d]) => ({
-        'display': '-webkit-box',
-        '-webkit-box-orient': ' vertical',
-        '-webkit-line-clamp': d,
-        'overflow': 'hidden',
-      }),
-    ],
-    [
-      /^sd-(\d+)-(\d+)$/,
-      ([, d, a]) => ({
-        'box-shadow': `0 0 ${d}px rgba(0, 0, 0, 0.${a})`,
-      }),
-    ],
   ],
   presets: [
     presetUno(),
@@ -40,13 +24,6 @@ export default defineConfig({
     presetIcons({
       scale: 1.2,
       warn: true,
-    }),
-    presetWebFonts({
-      fonts: {
-        sans: 'DM Sans',
-        serif: 'DM Serif Display',
-        mono: 'DM Mono',
-      },
     }),
   ],
 })

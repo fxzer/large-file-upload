@@ -44,7 +44,7 @@ export default defineConfig({
 
     // https://github.com/posva/unplugin-vue-router
     VueRouter({
-      dts: 'types/typed-router.d.ts',
+      dts: './types/typed-router.d.ts',
     }),
 
     // https://github.com/antfu/unplugin-auto-import
@@ -57,7 +57,7 @@ export default defineConfig({
           'vue-router/auto': ['useLink'],
         },
       ],
-      dts: 'types/auto-imports.d.ts',
+      dts: './types/auto-imports.d.ts',
       dirs: [
         './src/utils',
         './src/composables',
@@ -70,7 +70,7 @@ export default defineConfig({
 
     // https://github.com/antfu/vite-plugin-components
     Components({
-      dts: 'types/components.d.ts',
+      dts: './types/components.d.ts',
       resolvers: [
         ElementPlusResolver(),
       ],
