@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@9.1.1",
   "scripts": {
+    "dev": "concurrently \"npm -C client run dev\" \"npm -C server run dev\"",
     "client:dev": "npm -C client run dev",
     "server:dev": "npm -C server run dev",
     "postinstall": "npx simple-git-hooks",
@@ -10,9 +11,11 @@
     "lintf": "eslint . --fix"
   },
   "dependencies": {
+    "@antfu/ni": "^0.21.12"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^2.18.1",
+    "concurrently": "^8.2.2",
     "eslint": "^9.3.0",
     "eslint-plugin-format": "^0.1.1",
     "lint-staged": "^15.2.2",

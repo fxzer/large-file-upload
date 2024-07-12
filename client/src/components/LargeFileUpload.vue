@@ -27,14 +27,31 @@ interface Chunk {
   range: string
   size: string
 }
+let formDatas: FormData[] = []
 
 const inputRef = ref<HTMLInputElement | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
 // async function handleUpload(options: UploadRequestOptions) {
 //   const file = options.file
-async function handleUpload(e: Event) {
-  // const file = inputRef.value?.files?.[0]
-  const file = (e.target as HTMLInputElement).files?.[0]
+async function calcHashInWorker(chunks: Blob[]): Promise<string> {
+  const worker = new Worker('hashWorker.js')
+  worker.postMessage({ chunks })
+  return new Promise((resolve) => {
+    worker.onmessage = (event) => {
+      const { progress, hash = '' } = event.data
+      if (progress) {
+        progressMap.calculateHash = progress
+      }
+      if (hash) {
+        resolve(hash)
+        worker.terminate()
+      }
+    }
+  })
+}
+async function handleUpload() {
+  const file = inputRef.value?.files?.[0]
+  // const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) {
     ElNotification({
       title: '请选择文件',
@@ -43,55 +60,51 @@ async function handleUpload(e: Event) {
     return
   }
   const chunks = createChunks(file)
-  const pickedChunks = pickChunks(chunks, CHUNK_SIZE)
-  // const hash = await calculateHash(chunks)
-  // 创建一个Worker实例
-  const worker = new Worker('hashWorker.js')
-
-  // 向Worker发送数据
-  worker.postMessage({ chunks: pickedChunks })
-
-  // 监听Worker返回的数据
-  let fileHash = ''
-  worker.onmessage = async function (event) {
-    const { progress, hash } = event.data
-    if (progress) {
-      progressMap.calculateHash = progress
+  const pickedChunks = pickChunks(chunks)
+  const fileHash = await calcHashInWorker(pickedChunks)
+  const { shouldUpload, message, uploadedChunks = [], fileUrl } = await checkExist(fileHash)
+  if (shouldUpload) {
+    // 需要上传, 则上传文件 ，分片都已上传，则直接合并
+    if (uploadedChunks.length === chunks.length) {
+      await mergeRequest(file.name, CHUNK_SIZE, fileHash)
     }
-    if (hash) {
-      fileHash = hash
-      worker.terminate()
-      const { shouldUpload, message, uploadedChunks = [], fileUrl } = await checkExist(fileHash)
-      if (shouldUpload) {
-      // 需要上传, 则上传文件 ，分片都已上传，则直接合并
-        if (uploadedChunks.length === chunks.length) {
-          await mergeRequest(file.name, CHUNK_SIZE, fileHash)
-        }
-        else {
-          await uploadChunks(chunks, fileHash, uploadedChunks)
-          await mergeRequest(file.name, CHUNK_SIZE, fileHash)
-        }
-      }
-      else {
-        ElNotification({
-          title: message,
-          type: 'warning',
-        })
-        if (videoRef.value && fileUrl)
-          videoRef.value.src = fileUrl
-      }
+    else {
+      await uploadChunks(chunks, fileHash, uploadedChunks)
+      await mergeRequest(file.name, CHUNK_SIZE, fileHash)
     }
+  }
+  else {
+    ElNotification({
+      title: message,
+      type: 'warning',
+    })
+    if (videoRef.value && fileUrl)
+      videoRef.value.src = fileUrl
+  }
+}
+
+const isPause = ref(false)
+function handleControl() {
+  if (isPause.value) {
+    isPause.value = false
+    // 继续上传
+    handleUpload()
+  }
+  else {
+    isPause.value = true
+    // 暂停上传
+    formDatas = []
   }
 }
 
 // 创建切片: 10kb 一个切片
-function createChunks(file: File, chunkSize = CHUNK_SIZE) {
+function createChunks(file: File) {
   const chunks = []
   const fileSize = file.size
   fileSizeRef.value = formatSize(fileSize)
 
-  for (let cur = 0; cur < fileSize; cur += chunkSize) {
-    const end = Math.min(cur + chunkSize, fileSize) // 确保不超过文件大小
+  for (let cur = 0; cur < fileSize; cur += CHUNK_SIZE) {
+    const end = Math.min(cur + CHUNK_SIZE, fileSize) // 确保不超过文件大小
     progressMap.createChunks = end === fileSize ? 100 : Math.floor(end / fileSize * 100)
     chunks.push({
       name: `${chunks.length}-${file.name}`,
@@ -104,19 +117,19 @@ function createChunks(file: File, chunkSize = CHUNK_SIZE) {
 }
 
 // 用于计算 hash 的 chunks
-function pickChunks(chunks: Chunk[], chunkSize: number) {
+function pickChunks(chunks: Chunk[]) {
   const pickedChunks: Blob[] = []
-  for (let i = 0; i < chunks.length; i += chunkSize) {
+  for (let i = 0; i < chunks.length; i += CHUNK_SIZE) {
     const chunkFile = chunks[i].file
     // 除了第一个和最后一个切片，每个切片前中后各取两个字节
     if (i === 0 || i === chunks.length - 1) {
       pickedChunks.push(chunkFile)
     }
     else {
-      const mid = Math.floor(chunkSize / 2)
+      const mid = Math.floor(CHUNK_SIZE / 2)
       pickedChunks.push(chunkFile.slice(0, 2))
       pickedChunks.push(chunkFile.slice(mid, mid + 2))
-      pickedChunks.push(chunkFile.slice(chunkSize - 2, chunkSize))
+      pickedChunks.push(chunkFile.slice(CHUNK_SIZE - 2, CHUNK_SIZE))
     }
   }
   return pickedChunks
@@ -128,13 +141,14 @@ function checkExist(fileHash: string) {
 }
 
 async function uploadChunks(chunks: Chunk[], hash: string, uploadedChunks: number[] = []) {
-  const formDatas = chunks.filter((_, index) => !uploadedChunks.includes(index)).map(({ file, name }) => {
+  formDatas = chunks.filter((_, index) => !uploadedChunks.includes(index)).map(({ file, name }) => {
     const formData = new FormData()
     formData.append('chunk', file)
     formData.append('chunkName', name)
     formData.append('fileHash', hash)
     return formData
   })
+
   await currencyUpload(formDatas)
 }
 
@@ -146,19 +160,11 @@ async function currencyUpload(formDatas: FormData[]) {
   // const allProgress = index // 总进度
   while (index < formDatas.length) {
     // 生成一个任务
-    // const task = axios.post(`/api${API.upload}`, formDatas[index], {
-    //   onUploadProgress: (progress) => {
-    //     allProgress += (progress.loaded / (progress.total ? progress.total : 1)) // 这是单个分片的
-    //     console.log('[ allProgress ]-152', allProgress)
-    //     progressMap.uploadChunks = (allProgress / formDatas.length) * 100
-    //     console.log('[ progressMap.uploadChunks  ]-154', progressMap.uploadChunks)
-    //     // if (params.onProgress) params.onProgress({ percent })
-    //   },
+    const task = axios.post(`/api${API.upload}`, formDatas[index])
+    // const task = fetch(`/api${API.upload}`, {
+    //   method: 'POST',
+    //   body: formDatas[index],
     // })
-    const task = fetch(`/api${API.upload}`, {
-      method: 'POST',
-      body: formDatas[index],
-    })
 
     // 任务完成后从任务池中移除
     task.then(() => {
@@ -175,9 +181,8 @@ async function currencyUpload(formDatas: FormData[]) {
   await Promise.all(taskPool)
 }
 // 合并请求
-async function mergeRequest(fileName: string, chunkSize: number, fileHash: string) {
-  const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { chunkSize, fileHash, fileName }).then(res => res.data)
-  console.log('[ fileUrl ]-180', fileUrl)
+async function mergeRequest(fileName: string, CHUNK_SIZE: number, fileHash: string) {
+  const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
 
   if (success) {
     ElNotification({
@@ -196,6 +201,22 @@ async function mergeRequest(fileName: string, chunkSize: number, fileHash: strin
     <button btn @click="handleUpload">
       上传
     </button>
+    <button mx-3 btn @click="handleControl">
+      {{ isPause ? '继续' : '暂停' }}
+    </button>
+    <div my3 text-sm space-y-3>
+      <p flex-start-center space-x-3>
+        <span>文件大小: {{ fileSizeRef }}</span> <span>已经上传: </span> <span>当前速度: </span> <span>剩余时间: </span>
+      </p>
+      <p flex>
+        <span>切片进度：</span>
+        <el-progress :percentage="progressMap.createChunks" :stroke-width="10" flex-1 />
+      </p>
+      <p flex>
+        <span>HASH进度：</span>
+        <el-progress :percentage="progressMap.calculateHash" :stroke-width="10" flex-1 />
+      </p>
+    </div>
     <video ref="videoRef" mt-5 mxa w-200 src="" muted controls />
     <!-- <el-upload drag :http-request="handleUpload">
       <div class="el-upload__text h-30 flex-center">

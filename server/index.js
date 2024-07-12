@@ -90,6 +90,7 @@ app.post(API.upload, (req, res) => {
 // 合并分片
 app.post(API.merge, async (req, res) => {
   const { fileHash, fileName, chunkSize } = req.body
+  const fileExt = fileName.split('.').pop()
   const chunkDir = path.resolve(UPLOAD_DIR, fileHash)
   if (!fse.existsSync(chunkDir)) {
     res.status(401).json(UPLOAD_INFO.NO_CHUNK_DIR)
@@ -102,7 +103,7 @@ app.post(API.merge, async (req, res) => {
   const mergePromises = chunkNames.map((chunkName, index) => new Promise((resolve) => {
     const chunkPath = path.resolve(chunkDir, chunkName)
     const readStream = fse.createReadStream(chunkPath)
-    const writeStream = fse.createWriteStream(path.resolve(UPLOAD_DIR, `${fileHash}-${fileName}`), {
+    const writeStream = fse.createWriteStream(path.resolve(UPLOAD_DIR, `${fileHash}.${fileExt}`), {
       start: index * chunkSize,
       end: (index + 1) * chunkSize,
     })
@@ -116,7 +117,7 @@ app.post(API.merge, async (req, res) => {
   }))
   await Promise.all(mergePromises)
   fse.remove(chunkDir)
-  res.json({ ...UPLOAD_DIR.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}-${fileName}` })
+  res.json({ ...UPLOAD_DIR.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}.${fileExt}` })
 })
 
 app.listen(8001, () => {
