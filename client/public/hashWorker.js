@@ -4,11 +4,11 @@ globalThis.importScripts('./spark-md5.min.js')
 onmessage = async function ({ data }) {
   const hash = await calculateHash(data.chunks)
   // 处理数据并返回
-  postMessage({hash})
+  postMessage({ hash })
 }
 
 function calculateHash(chunks) {
-  console.time('hash')
+  console.time('CalcHashTimeConsume')
   return new Promise((resolve, reject) => {
     const spark = new SparkMD5.ArrayBuffer()
 
@@ -16,7 +16,7 @@ function calculateHash(chunks) {
     function processChunk(index) {
       const progress = Math.floor((index + 1) / chunks.length * 100)
       if (index >= chunks.length) {
-        console.timeEnd('hash')
+        console.timeEnd('CalcHashTimeConsume')
         resolve(spark.end())
         return
       }

@@ -3,8 +3,8 @@
   "private": true,
   "packageManager": "pnpm@9.5.0",
   "scripts": {
-    "build": "vite build",
     "dev": "vite --port 3333 --open",
+    "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
     "up": "taze major -I"

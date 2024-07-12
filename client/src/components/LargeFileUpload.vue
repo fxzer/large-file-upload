@@ -8,16 +8,19 @@ const API = {
   merge: '/merge',
 }
 
-const fileSizeRef = ref('0B')
 interface Progress {
   createChunks: number
   calculateHash: number
-  uploadChunks: number
+  uploadedChunks: number
+  fileSize: number
 }
+const total = ref(0)
+
 const progressMap = reactive<Progress>({
   createChunks: 0,
   calculateHash: 0,
-  uploadChunks: 0,
+  uploadedChunks: 0,
+  fileSize: 0,
 })
 
 const CHUNK_SIZE = 10 * 1024 * 1024 // 10MB
@@ -27,7 +30,32 @@ interface Chunk {
   range: string
   size: string
 }
-let formDatas: FormData[] = []
+const startTime = ref(Date.now())
+const endTime = ref(Date.now())
+const ratio = ref(0.98)
+const uploadProgress = computed(() => total.value ? Math.floor(progressMap.uploadedChunks / total.value * 100 * ratio.value) : 0)
+const uploadSize = computed(() => {
+  const uploadedSize = progressMap.uploadedChunks * CHUNK_SIZE
+  return formatSize(Math.min(uploadedSize, progressMap.fileSize))
+})
+const uploadSpeed = computed(() => {
+  const time = endTime.value - startTime.value
+  if (!time)
+    return '0B/s'
+  const speed = progressMap.uploadedChunks * CHUNK_SIZE / time * 1000
+  return `${formatSize(speed)}/s`
+})
+
+const restTime = computed(() => {
+  const time = endTime.value - startTime.value
+  if (!time)
+    return '0s'
+  const uploadedSize = progressMap.uploadedChunks * CHUNK_SIZE
+  const restSize = progressMap.fileSize - uploadedSize
+  const speed = progressMap.uploadedChunks * CHUNK_SIZE / time * 1000
+  const restTime = Math.max(Math.floor(restSize / speed / ratio.value), 0)
+  return formatTime(restTime)
+})
 
 const inputRef = ref<HTMLInputElement | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -49,6 +77,7 @@ async function calcHashInWorker(chunks: Blob[]): Promise<string> {
     }
   })
 }
+const controllers: AbortController[] = []
 async function handleUpload() {
   const file = inputRef.value?.files?.[0]
   // const file = (e.target as HTMLInputElement).files?.[0]
@@ -59,18 +88,25 @@ async function handleUpload() {
     })
     return
   }
+  progressMap.createChunks = 0
+  progressMap.calculateHash = 0
+  progressMap.uploadedChunks = 0
+
   const chunks = createChunks(file)
+  total.value = chunks.length
   const pickedChunks = pickChunks(chunks)
+
   const fileHash = await calcHashInWorker(pickedChunks)
   const { shouldUpload, message, uploadedChunks = [], fileUrl } = await checkExist(fileHash)
   if (shouldUpload) {
     // 需要上传, 则上传文件 ，分片都已上传，则直接合并
+    progressMap.uploadedChunks = uploadedChunks.length
     if (uploadedChunks.length === chunks.length) {
-      await mergeRequest(file.name, CHUNK_SIZE, fileHash)
+      await mergeRequest(file.name, fileHash)
     }
     else {
       await uploadChunks(chunks, fileHash, uploadedChunks)
-      await mergeRequest(file.name, CHUNK_SIZE, fileHash)
+      await mergeRequest(file.name, fileHash)
     }
   }
   else {
@@ -84,16 +120,16 @@ async function handleUpload() {
 }
 
 const isPause = ref(false)
+
 function handleControl() {
+  isPause.value = !isPause.value
+  // 继续上传
   if (isPause.value) {
-    isPause.value = false
-    // 继续上传
-    handleUpload()
+    controllers.forEach(controller => controller.abort())
   }
   else {
-    isPause.value = true
     // 暂停上传
-    formDatas = []
+    handleUpload()
   }
 }
 
@@ -101,7 +137,7 @@ function handleControl() {
 function createChunks(file: File) {
   const chunks = []
   const fileSize = file.size
-  fileSizeRef.value = formatSize(fileSize)
+  progressMap.fileSize = fileSize
 
   for (let cur = 0; cur < fileSize; cur += CHUNK_SIZE) {
     const end = Math.min(cur + CHUNK_SIZE, fileSize) // 确保不超过文件大小
@@ -141,7 +177,8 @@ function checkExist(fileHash: string) {
 }
 
 async function uploadChunks(chunks: Chunk[], hash: string, uploadedChunks: number[] = []) {
-  formDatas = chunks.filter((_, index) => !uploadedChunks.includes(index)).map(({ file, name }) => {
+  startTime.value = Date.now()
+  const formDatas = chunks.filter((_, index) => !uploadedChunks.includes(index)).map(({ file, name }) => {
     const formData = new FormData()
     formData.append('chunk', file)
     formData.append('chunkName', name)
@@ -160,19 +197,28 @@ async function currencyUpload(formDatas: FormData[]) {
   // const allProgress = index // 总进度
   while (index < formDatas.length) {
     // 生成一个任务
-    const task = axios.post(`/api${API.upload}`, formDatas[index])
-    // const task = fetch(`/api${API.upload}`, {
-    //   method: 'POST',
-    //   body: formDatas[index],
-    // })
+    const controller = new AbortController()
+    const task = axios.post(`/api${API.upload}`, formDatas[index], {
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    if (isPause.value) {
+      break
+    }
+    index++
+    taskPool.push(task)
+    controllers.push(controller)
 
     // 任务完成后从任务池中移除
     task.then(() => {
       taskPool.splice(taskPool.findIndex(item => item === task))
+      controllers.splice(controllers.findIndex(item => item === controller))
+      progressMap.uploadedChunks++
+      endTime.value = Date.now()
     })
 
-    index++
-    taskPool.push(task)
     if (taskPool.length === max) {
       await Promise.race(taskPool) // 竞赛等出一个执行完毕的请求
     }
@@ -181,10 +227,12 @@ async function currencyUpload(formDatas: FormData[]) {
   await Promise.all(taskPool)
 }
 // 合并请求
-async function mergeRequest(fileName: string, CHUNK_SIZE: number, fileHash: string) {
-  const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
+async function mergeRequest(fileName: string, fileHash: string) {
+  const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { chunkSize: CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
 
   if (success) {
+    ratio.value = 1
+    endTime.value = Date.now()
     ElNotification({
       title: message,
       type: 'success',
@@ -205,16 +253,23 @@ async function mergeRequest(fileName: string, CHUNK_SIZE: number, fileHash: stri
       {{ isPause ? '继续' : '暂停' }}
     </button>
     <div my3 text-sm space-y-3>
-      <p flex-start-center space-x-3>
-        <span>文件大小: {{ fileSizeRef }}</span> <span>已经上传: </span> <span>当前速度: </span> <span>剩余时间: </span>
+      <p flex-start-center space-x-3 text-left>
+        <span>文件大小:</span><span w-20>{{ formatSize(progressMap.fileSize) }}</span>
+        已经上传: <span w-20>{{ uploadSize }}</span>
+        上传速度: <span w-20>{{ uploadSpeed }} </span>
+        剩余时间: <span> {{ restTime }}</span>
       </p>
       <p flex>
         <span>切片进度：</span>
         <el-progress :percentage="progressMap.createChunks" :stroke-width="10" flex-1 />
       </p>
       <p flex>
-        <span>HASH进度：</span>
+        <span>Hash计算：</span>
         <el-progress :percentage="progressMap.calculateHash" :stroke-width="10" flex-1 />
+      </p>
+      <p flex>
+        <span>上传进度：</span>
+        <el-progress :percentage="uploadProgress" :stroke-width="10" flex-1 />
       </p>
     </div>
     <video ref="videoRef" mt-5 mxa w-200 src="" muted controls />
@@ -225,7 +280,7 @@ async function mergeRequest(fileName: string, CHUNK_SIZE: number, fileHash: stri
       <template #tip>
         <div my3 text-sm space-y-3>
           <p flex-start-center space-x-3>
-            <span>文件大小: {{ fileSizeRef }}</span> <span>已经上传: </span> <span>当前速度: </span> <span>剩余时间: </span>
+            <span>文件大小: {{ progressMap.fileSize }}</span> <span>已经上传: </span> <span>当前速度: </span> <span>剩余时间: </span>
           </p>
           <p flex>
             <span>切片进度：</span>

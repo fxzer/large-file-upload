@@ -13,6 +13,7 @@ const API = {
 const SERVER_URL = 'http://localhost:8001'
 const UPLOAD_INFO = {
   FAIL: { success: false, message: '上传失败' },
+  CHUNK_SUCCESS: { success: true, message: '分片上传成功' },
   SUCCESS: { success: true, message: '上传成功' },
   EXIST: { shouldUpload: false, message: '文件已存在' },
   NOT_EXIST: { shouldUpload: true, message: '文件不存在', uploadedChunks: [] },
@@ -96,7 +97,6 @@ app.post(API.merge, async (req, res) => {
     res.status(401).json(UPLOAD_INFO.NO_CHUNK_DIR)
     return
   }
-
   // 合并分片
   const chunkNames = await fse.readdir(chunkDir)
   chunkNames.sort((a, b) => +a.split('-')[0] - +b.split('-')[0])
@@ -117,7 +117,7 @@ app.post(API.merge, async (req, res) => {
   }))
   await Promise.all(mergePromises)
   fse.remove(chunkDir)
-  res.json({ ...UPLOAD_DIR.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}.${fileExt}` })
+  res.json({ ...UPLOAD_INFO.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}.${fileExt}` })
 })
 
 app.listen(8001, () => {
