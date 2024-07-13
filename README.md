@@ -14,6 +14,8 @@
 # 前端(./client)
 
 - Vue3
+- ElementPlus
+- Vue-Router
 - Web Worker
 
 # 后端(./server)
