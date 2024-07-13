@@ -7,14 +7,14 @@
   "keywords": [],
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "dev:simple": "nodemon  ./simple/index.js"
   },
   "dependencies": {
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "fs-extra": "^11.2.0",
-    "koa-router": "^12.0.1",
     "multer": "1.4.5-lts.1",
     "multiparty": "^4.2.3"
   },
