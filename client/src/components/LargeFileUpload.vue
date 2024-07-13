@@ -14,13 +14,10 @@ interface Chunk {
   file: Blob
   size: string
 }
-const startTime = ref(Date.now())
-const endTime = ref(Date.now())
 
 const inputRef = ref<HTMLInputElement | null>(null)
 
 const filesList = ref<any>([])
-const controllers: AbortController[] = []
 
 function getCurrentByHash(hash: string) {
   return filesList.value.find((item: any) => item.hash === hash)
@@ -33,8 +30,8 @@ async function handleUpload() {
   for await (const file of files) {
     await handlePreUpload(file)
   }
-  const newFileList = filesList.value.filter((item: any) => item.shouldUpload)
-  for await (const fileInfo of newFileList) {
+  const newFileList = filesList.value.filter((item: any) => !item.fileUrl)
+  for (const fileInfo of newFileList) {
     if (fileInfo.shouldUpload) {
       await uploadFile(fileInfo)
     }
@@ -77,6 +74,7 @@ async function handlePreUpload(file: File) {
         isExist: false,
         chunks,
         uploadedChunks,
+        controllers: [],
       }
       filesList.value.push(fileInfo)
     }
@@ -107,18 +105,16 @@ async function calcHashInWorker(chunks: Blob[]): Promise<string> {
 
 async function uploadFile(fileInfo: any) {
   const { uploadedChunks = [], chunks, hash: fileHash } = fileInfo
-  // 需要上传, 则上传文件 ，分片都已上传，则直接合并
   fileInfo.uploadedCount = uploadedChunks.length
-  if (uploadedChunks.length) {
-    if (uploadedChunks.length === chunks.length) {
-      await mergeRequest(fileInfo.file.name, fileHash)
-    }
-    else {
-      await uploadChunks(chunks, fileHash, uploadedChunks)
-    }
-  }
-  else {
+
+  // 如果没有已上传的分片，则上传所有分片
+  if (uploadedChunks.length < chunks.length) {
     await uploadChunks(chunks, fileHash, uploadedChunks)
+  }
+
+  // 所有分片都上传后，合并文件
+  if (uploadedChunks.length === chunks.length) {
+    await mergeRequest(fileInfo.file.name, fileHash)
   }
 }
 
@@ -129,7 +125,7 @@ function handleControl(row: any) {
 
   // 暂停上传
   if (currentRow.isPause) {
-    controllers.forEach(controller => controller.abort())
+    currentRow.controllers.forEach(controller => controller.abort())
   }
   else {
     // 继续上传
@@ -184,7 +180,6 @@ function checkExist(fileHash: string) {
 }
 
 async function uploadChunks(chunks: Chunk[], hash: string, uploadedChunks: number[] = []) {
-  startTime.value = Date.now()
   const formDatas = chunks.filter((_, index) => !uploadedChunks.includes(index)).map(({ file, name }) => {
     const formData = new FormData()
     formData.append('chunk', file)
@@ -217,16 +212,15 @@ async function currencyUpload(formDatas: FormData[], hash: string) {
     }
     index++
     taskPool.push(task)
-    controllers.push(controller)
+    currentRow.controllers.push(controller)
 
     // 任务完成后从任务池中移除
     task.then(() => {
       taskPool.splice(taskPool.findIndex(item => item === task))
-      controllers.splice(controllers.findIndex(item => item === controller))
+      currentRow.controllers.splice(currentRow.controllers.findIndex(item => item === controller))
       currentRow.uploadedCount++
 
       currentRow.progress = Math.floor((currentRow.uploadedCount / currentRow.totalChunk) * 98)
-      endTime.value = Date.now()
     })
 
     if (taskPool.length === max) {
@@ -250,7 +244,6 @@ async function mergeRequest(fileName: string, fileHash: string) {
 
   if (success) {
     currentRow.progress = 100
-    endTime.value = Date.now()
     ElNotification({
       title: message,
       type: 'success',
