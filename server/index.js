@@ -85,6 +85,7 @@ app.post(API.upload, (req, res) => {
     if (!fse.existsSync(chunkDir)) {
       await fse.mkdirs(chunkDir)
     }
+    // FIXME 暂停继续报错
     try {
       await fse.move(chunk.path, `${chunkDir}/${chunkName}`)
       res.status(200).json(UPLOAD_DIR.success)
