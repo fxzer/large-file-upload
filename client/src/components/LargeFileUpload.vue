@@ -1,6 +1,10 @@
 <script setup lang='ts'>
 import axios from 'axios'
 
+const http = axios.create({
+  baseURL: '/api',
+})
+
 const API = {
   check: '/check',
   upload: '/upload',
@@ -136,7 +140,7 @@ function cancelUpload(row: any) {
   row.isPause = false
   handleControl(row)
   filesList.value = filesList.value.filter((item: any) => item !== row)
-  axios.post(`/api${API.cancel}`, { fileHash: row.hash })
+  http.post(API.cancel, { fileHash: row.hash })
 }
 
 // 创建切片: 10kb 一个切片
@@ -176,7 +180,7 @@ function pickChunks(chunks: Chunk[]) {
 
 // 验证文件是否存在
 function checkExist(fileHash: string) {
-  return axios.post(`/api${API.check}`, { fileHash }).then(res => res.data)
+  return http.post(API.check, { fileHash }).then(res => res.data)
 }
 
 async function uploadChunks(chunks: Chunk[], hash: string, uploadedChunks: number[] = []) {
@@ -201,7 +205,7 @@ async function currencyUpload(formDatas: FormData[], hash: string) {
   while (index < formDatas.length) {
     // 生成一个任务
     const controller = new AbortController()
-    const task = axios.post(`/api${API.upload}`, formDatas[index], {
+    const task = http.post(API.upload, formDatas[index], {
       signal: controller.signal,
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -238,8 +242,7 @@ async function currencyUpload(formDatas: FormData[], hash: string) {
 
 // 合并请求
 async function mergeRequest(fileName: string, fileHash: string) {
-  const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { chunkSize: CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
-
+  const { success, message, fileUrl } = await http.post(API.merge, { chunkSize: CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
   const currentRow = getCurrentByHash(fileHash)
 
   if (success) {
