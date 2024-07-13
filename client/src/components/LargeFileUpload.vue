@@ -1,27 +1,12 @@
 <script setup lang='ts'>
 import axios from 'axios'
-// import type { UploadRequestOptions } from 'element-plus'
 
 const API = {
   check: '/check',
   upload: '/upload',
   merge: '/merge',
+  cancel: '/cancel',
 }
-
-interface Progress {
-  createChunks: number
-  calculateHash: number
-  uploadedChunks: number
-  fileSize: number
-}
-const total = ref(0)
-
-const progressMap = reactive<Progress>({
-  createChunks: 0,
-  calculateHash: 0,
-  uploadedChunks: 0,
-  fileSize: 0,
-})
 
 const CHUNK_SIZE = 10 * 1024 * 1024 // 10MB
 interface Chunk {
@@ -31,55 +16,32 @@ interface Chunk {
 }
 const startTime = ref(Date.now())
 const endTime = ref(Date.now())
-const ratio = ref(0.98)
-const calculateSpeed = (uploadedChunks: number, time: number) => time ? uploadedChunks * CHUNK_SIZE / time * 1000 : 0
-
-const fileSize = ref('')
-const uploadSize = ref('')
-const uploadSpeed = ref('')
-const restTime = ref('')
-const uploadProgress = ref(0)
-watchEffect(() => {
-  uploadProgress.value = total.value ? Math.floor(progressMap.uploadedChunks / total.value * 100 * ratio.value) : 0
-
-  fileSize.value = progressMap.fileSize ? formatSize(progressMap.fileSize) : ''
-
-  const uploadedSize = progressMap.uploadedChunks * CHUNK_SIZE
-  uploadSize.value = uploadedSize ? formatSize(Math.min(uploadedSize, progressMap.fileSize)) : ''
-
-  const time = endTime.value - startTime.value
-  const speed = calculateSpeed(progressMap.uploadedChunks, time)
-  uploadSpeed.value = time ? `${formatSize(speed)}/s` : ''
-
-  const restSize = progressMap.fileSize - uploadedSize
-  const restPart = speed ? Math.max(Math.floor(restSize / speed / ratio.value), 0) : 0
-  restTime.value = restPart ? formatTime(restPart) : ''
-})
 
 const inputRef = ref<HTMLInputElement | null>(null)
-const downloadUrl = ref('')
-// async function handleUpload(options: UploadRequestOptions) {
-//   const file = options.file
-async function calcHashInWorker(chunks: Blob[]): Promise<string> {
-  const worker = new Worker('hashWorker.js')
-  worker.postMessage({ chunks })
-  return new Promise((resolve) => {
-    worker.onmessage = (event) => {
-      const { progress, hash = '' } = event.data
-      if (progress) {
-        progressMap.calculateHash = progress
-      }
-      if (hash) {
-        resolve(hash)
-        worker.terminate()
-      }
-    }
-  })
-}
+
+const filesList = ref<any>([])
 const controllers: AbortController[] = []
+
+function getCurrentByHash(hash: string) {
+  return filesList.value.find((item: any) => item.hash === hash)
+}
+
 async function handleUpload() {
-  const file = inputRef.value?.files?.[0]
-  // const file = (e.target as HTMLInputElement).files?.[0]
+  const files: any = inputRef.value!.files
+  if (!files)
+    return
+  for await (const file of files) {
+    await handlePreUpload(file)
+  }
+  const newFileList = filesList.value.filter((item: any) => item.shouldUpload)
+  for await (const fileInfo of newFileList) {
+    if (fileInfo.shouldUpload) {
+      await uploadFile(fileInfo)
+    }
+  }
+}
+
+async function handlePreUpload(file: File) {
   if (!file) {
     ElNotification({
       title: '请选择文件',
@@ -87,64 +49,107 @@ async function handleUpload() {
     })
     return
   }
-  progressMap.createChunks = 0
-  progressMap.calculateHash = 0
-  progressMap.uploadedChunks = 0
 
   const chunks = createChunks(file)
-  total.value = chunks.length
   const pickedChunks = pickChunks(chunks)
-
   const fileHash = await calcHashInWorker(pickedChunks)
-  const { shouldUpload, message, uploadedChunks = [], fileUrl = '' } = await checkExist(fileHash)
+
+  const { shouldUpload, message, uploadedChunks = [] } = await checkExist(fileHash)
+  let fileInfo: any = {}
   if (shouldUpload) {
-    downloadUrl.value = ''
-    // 需要上传, 则上传文件 ，分片都已上传，则直接合并
-    progressMap.uploadedChunks = uploadedChunks.length
-    if (uploadedChunks.length === chunks.length) {
-      await mergeRequest(file.name, fileHash)
+    fileInfo = getCurrentByHash(fileHash)
+    if (fileInfo) {
+      ElNotification({
+        title: '文件已在列表',
+        type: 'warning',
+      })
     }
     else {
-      await uploadChunks(chunks, fileHash, uploadedChunks)
-      ElNotification({
-        title: '所有分片上传成功',
-        type: 'success',
-      })
-      await mergeRequest(file.name, fileHash)
+    // 表格中没有，并且需要上传 才放入表格
+      fileInfo = {
+        file,
+        hash: fileHash,
+        progress: 0,
+        fileUrl: '',
+        totalChunk: chunks.length,
+        uploadedCount: uploadedChunks.length,
+        isPause: false,
+        isExist: false,
+        chunks,
+        uploadedChunks,
+      }
+      filesList.value.push(fileInfo)
     }
   }
   else {
-    downloadUrl.value = fileUrl
     ElNotification({
-      title: message,
+      title: `${message}（${file.name}）`,
       type: 'warning',
     })
   }
+  fileInfo.shouldUpload = shouldUpload
+  return fileInfo
 }
 
-const isPause = ref(false)
+async function calcHashInWorker(chunks: Blob[]): Promise<string> {
+  const worker = new Worker('hashWorker.js')
+  worker.postMessage({ chunks })
+  return new Promise((resolve) => {
+    worker.onmessage = (event) => {
+      const { hash = '' } = event.data
+      if (hash) {
+        resolve(hash)
+        worker.terminate()
+      }
+    }
+  })
+}
 
-function handleControl() {
-  isPause.value = !isPause.value
+async function uploadFile(fileInfo: any) {
+  const { uploadedChunks = [], chunks, hash: fileHash } = fileInfo
+  // 需要上传, 则上传文件 ，分片都已上传，则直接合并
+  fileInfo.uploadedCount = uploadedChunks.length
+  if (uploadedChunks.length) {
+    if (uploadedChunks.length === chunks.length) {
+      await mergeRequest(fileInfo.file.name, fileHash)
+    }
+    else {
+      await uploadChunks(chunks, fileHash, uploadedChunks)
+    }
+  }
+  else {
+    await uploadChunks(chunks, fileHash, uploadedChunks)
+  }
+}
+
+function handleControl(row: any) {
+  // FIXME: 暂停后继续上传，会导致文件上传完毕后打不开
+  const currentRow = getCurrentByHash(row.hash)
+  currentRow.isPause = !currentRow.isPause
+
   // 暂停上传
-  if (isPause.value) {
+  if (currentRow.isPause) {
     controllers.forEach(controller => controller.abort())
   }
   else {
     // 继续上传
-    handleUpload()
+    uploadFile(currentRow)
   }
+}
+function cancelUpload(row: any) {
+  row.isPause = false
+  handleControl(row)
+  filesList.value = filesList.value.filter((item: any) => item !== row)
+  axios.post(`/api${API.cancel}`, { fileHash: row.hash })
 }
 
 // 创建切片: 10kb 一个切片
 function createChunks(file: File) {
   const chunks = []
   const fileSize = file.size
-  progressMap.fileSize = fileSize
 
   for (let cur = 0; cur < fileSize; cur += CHUNK_SIZE) {
     const end = Math.min(cur + CHUNK_SIZE, fileSize) // 确保不超过文件大小
-    progressMap.createChunks = end === fileSize ? 100 : Math.floor(end / fileSize * 100)
     chunks.push({
       name: `${chunks.length}-${file.name}`,
       file: file.slice(cur, end),
@@ -188,15 +193,16 @@ async function uploadChunks(chunks: Chunk[], hash: string, uploadedChunks: numbe
     return formData
   })
 
-  await currencyUpload(formDatas)
+  await currencyUpload(formDatas, hash)
 }
 
 // 并发上传
-async function currencyUpload(formDatas: FormData[]) {
+async function currencyUpload(formDatas: FormData[], hash: string) {
   let index = 0
   const max = 6 // 设置浏览器运行最大并发数  目前6个为当前的主流
   const taskPool: Array<Promise<any>> = []
-  // const allProgress = index // 总进度
+  const currentRow = getCurrentByHash(hash)
+
   while (index < formDatas.length) {
     // 生成一个任务
     const controller = new AbortController()
@@ -206,7 +212,7 @@ async function currencyUpload(formDatas: FormData[]) {
         'Content-Type': 'multipart/form-data',
       },
     })
-    if (isPause.value) {
+    if (currentRow && currentRow.isPause) {
       break
     }
     index++
@@ -217,7 +223,9 @@ async function currencyUpload(formDatas: FormData[]) {
     task.then(() => {
       taskPool.splice(taskPool.findIndex(item => item === task))
       controllers.splice(controllers.findIndex(item => item === controller))
-      progressMap.uploadedChunks++
+      currentRow.uploadedCount++
+
+      currentRow.progress = Math.floor((currentRow.uploadedCount / currentRow.totalChunk) * 98)
       endTime.value = Date.now()
     })
 
@@ -227,61 +235,76 @@ async function currencyUpload(formDatas: FormData[]) {
   }
 
   await Promise.all(taskPool)
+  ElNotification({
+    title: '所有分片上传成功',
+    type: 'success',
+  })
+  await mergeRequest(currentRow.file.name, hash)
 }
+
 // 合并请求
 async function mergeRequest(fileName: string, fileHash: string) {
   const { success, message, fileUrl } = await axios.post(`/api${API.merge}`, { chunkSize: CHUNK_SIZE, fileHash, fileName }).then(res => res.data)
 
+  const currentRow = getCurrentByHash(fileHash)
+
   if (success) {
-    ratio.value = 1
+    currentRow.progress = 100
     endTime.value = Date.now()
     ElNotification({
       title: message,
       type: 'success',
     })
-    downloadUrl.value = fileUrl
+    currentRow.fileUrl = fileUrl
   }
 }
 </script>
 
 <template>
   <div class="mxa w-8/10">
-    <input ref="inputRef" type="file" @input="handleUpload">
-    <button btn @click="handleUpload">
-      上传
-    </button>
-    <button mx-3 btn @click="handleControl">
-      {{ isPause ? '继续' : '暂停' }}
-    </button>
-    <div my3 text-sm space-y-3>
-      <p flex-start-center space-x-3 text-left>
-        <span>文件大小:</span><span w-20>{{ fileSize }}</span>
-        已经上传: <span w-20>{{ uploadSize }}</span>
-        上传速度: <span min-w-24>{{ uploadSpeed }} </span>
-        剩余时间: <span> {{ restTime }}</span>
-      </p>
-      <p flex>
-        <span>切片进度：</span>
-        <el-progress :percentage="progressMap.createChunks" :stroke-width="10" flex-1 />
-      </p>
-      <p flex>
-        <span>Hash计算：</span>
-        <el-progress :percentage="progressMap.calculateHash" :stroke-width="10" flex-1 />
-      </p>
-      <p flex>
-        <span>上传进度：</span>
-        <el-progress :percentage="uploadProgress" :stroke-width="10" flex-1 />
-      </p>
-    </div>
-    <a v-show="downloadUrl" :href="downloadUrl" text-blue underline>下载链接</a>
-    <!-- <el-upload drag :http-request="handleUpload">
-      <div class="el-upload__text h-30 flex-center">
-        拖拽文件到此 <em> 或点击上传</em>
+    <div h-100 border="~ dashed " border-gray:50 rounded relative>
+      <input ref="inputRef" type="file" absolute left-0 top-0 multiple op0 wh-full cursor-pointer z-10 @change="handleUpload">
+      <div absolute class="left-1/2 top-1/2 -translate-1/2" z-1 text-gray>
+        <p>拖拽文件到此处</p>
+        或<p text-blue cursor-pointer>
+          点击上传文件和文件夹
+        </p>
       </div>
-      <template #tip>
-            info
+    </div>
+    <div my3 text-sm space-y-3>
+      <el-table :data="filesList">
+        <el-table-column label="名称" prop="file.name" />
+        <el-table-column label="类型" prop="file.type" />
+        <el-table-column label="大小">
+          <template #default="{ row }">
+            {{ formatSize(row.file.size) }}
           </template>
-    </el-upload> -->
+        </el-table-column>
+        <el-table-column label="状态">
+          <template #default="{ row }">
+            <el-progress :percentage="row.progress" />
+          </template>
+        </el-table-column>
+        <el-table-column label="链接" prop="fileUrl">
+          <template #default="{ row }">
+            <a v-show="row.fileUrl" :href="row.fileUrl" text-blue underline>下载</a>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="操作" width="140">
+          <template #default="{ row }">
+            <div v-if="!row.fileUrl">
+              <button btn-mini @click="handleControl(row)">
+                {{ row.isPause ? '继续' : '暂停' }}
+              </button>
+              <button btn-mini bg-red hover:bg-red-500 ml3 @click="cancelUpload(row)">
+                取消
+              </button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
   </div>
 </template>
 

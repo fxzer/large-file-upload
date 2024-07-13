@@ -8,6 +8,8 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ElProgress: typeof import('element-plus/es')['ElProgress']
+    ElTable: typeof import('element-plus/es')['ElTable']
+    ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     LargeFileUpload: typeof import('./../src/components/LargeFileUpload.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

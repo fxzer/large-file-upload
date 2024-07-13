@@ -19,6 +19,8 @@ const UPLOAD_INFO = {
   NOT_EXIST: { shouldUpload: true, message: '文件不存在', uploadedChunks: [] },
   NO_CHUNK_DIR: { message: '分片文件夹不存在', success: false },
   MERGE_SUCCESS: { message: '合并成功', success: true },
+  CANCEL_SUCCESS: { message: '取消成功', success: true },
+  CANCEL_FAIL: { message: '取消失败', success: true },
 }
 
 const app = express()
@@ -83,8 +85,13 @@ app.post(API.upload, (req, res) => {
     if (!fse.existsSync(chunkDir)) {
       await fse.mkdirs(chunkDir)
     }
-    await fse.move(chunk.path, `${chunkDir}/${chunkName}`)
-    res.status(200).json(UPLOAD_DIR.success)
+    try {
+      await fse.move(chunk.path, `${chunkDir}/${chunkName}`)
+      res.status(200).json(UPLOAD_DIR.success)
+    }
+    catch {
+      res.status(401).json(UPLOAD_DIR.FAIL)
+    }
   })
 })
 
@@ -118,6 +125,22 @@ app.post(API.merge, async (req, res) => {
   await Promise.all(mergePromises)
   fse.remove(chunkDir)
   res.json({ ...UPLOAD_INFO.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}.${fileExt}` })
+})
+
+// 取消上传
+app.post('/cancel', async (req, res) => {
+  const { fileHash } = req.body
+  const chunkDir = path.resolve(UPLOAD_DIR, fileHash)
+  if (fse.existsSync(chunkDir)) {
+    try {
+      // FIXME: 无法删干净
+      await fse.remove(chunkDir)
+      res.status(200).json(UPLOAD_INFO.CANCEL_SUCCESS)
+    }
+    catch {
+      res.status(401).json(UPLOAD_INFO.CANCEL_FAIL)
+    }
+  }
 })
 
 app.listen(8001, () => {
