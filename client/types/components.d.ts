@@ -14,6 +14,7 @@ declare module 'vue' {
     LargeFileUpload: typeof import('./../src/components/LargeFileUpload.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SimpleUpload: typeof import('./../src/components/SimpleUpload.vue')['default']
     TheFooter: typeof import('./../src/components/TheFooter.vue')['default']
   }
 }

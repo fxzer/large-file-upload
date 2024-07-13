@@ -8,8 +8,8 @@
 - 并发上传
 - 合并文件
 - 文件上传进度
+- 断点续传(暂停/继续)
 - 取消上传
-- 断点续传
 
 # 前端(./client)
 
@@ -19,3 +19,11 @@
 # 后端(./server)
 
 - express
+
+# 功能预览
+
+![预览](./client/public/screenshot.png)
+
+# 主要逻辑
+
+![逻辑图](./client/public/mind.svg)
