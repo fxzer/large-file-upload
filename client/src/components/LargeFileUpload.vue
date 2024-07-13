@@ -27,38 +27,37 @@ const CHUNK_SIZE = 10 * 1024 * 1024 // 10MB
 interface Chunk {
   name: string
   file: Blob
-  range: string
   size: string
 }
 const startTime = ref(Date.now())
 const endTime = ref(Date.now())
 const ratio = ref(0.98)
-const uploadProgress = computed(() => total.value ? Math.floor(progressMap.uploadedChunks / total.value * 100 * ratio.value) : 0)
-const uploadSize = computed(() => {
-  const uploadedSize = progressMap.uploadedChunks * CHUNK_SIZE
-  return formatSize(Math.min(uploadedSize, progressMap.fileSize))
-})
-const uploadSpeed = computed(() => {
-  const time = endTime.value - startTime.value
-  if (!time)
-    return '0B/s'
-  const speed = progressMap.uploadedChunks * CHUNK_SIZE / time * 1000
-  return `${formatSize(speed)}/s`
-})
+const calculateSpeed = (uploadedChunks: number, time: number) => time ? uploadedChunks * CHUNK_SIZE / time * 1000 : 0
 
-const restTime = computed(() => {
-  const time = endTime.value - startTime.value
-  if (!time)
-    return '0s'
+const fileSize = ref('')
+const uploadSize = ref('')
+const uploadSpeed = ref('')
+const restTime = ref('')
+const uploadProgress = ref(0)
+watchEffect(() => {
+  uploadProgress.value = total.value ? Math.floor(progressMap.uploadedChunks / total.value * 100 * ratio.value) : 0
+
+  fileSize.value = progressMap.fileSize ? formatSize(progressMap.fileSize) : ''
+
   const uploadedSize = progressMap.uploadedChunks * CHUNK_SIZE
+  uploadSize.value = uploadedSize ? formatSize(Math.min(uploadedSize, progressMap.fileSize)) : ''
+
+  const time = endTime.value - startTime.value
+  const speed = calculateSpeed(progressMap.uploadedChunks, time)
+  uploadSpeed.value = time ? `${formatSize(speed)}/s` : ''
+
   const restSize = progressMap.fileSize - uploadedSize
-  const speed = progressMap.uploadedChunks * CHUNK_SIZE / time * 1000
-  const restTime = Math.max(Math.floor(restSize / speed / ratio.value), 0)
-  return formatTime(restTime)
+  const restPart = speed ? Math.max(Math.floor(restSize / speed / ratio.value), 0) : 0
+  restTime.value = restPart ? formatTime(restPart) : ''
 })
 
 const inputRef = ref<HTMLInputElement | null>(null)
-const videoRef = ref<HTMLVideoElement | null>(null)
+const downloadUrl = ref('')
 // async function handleUpload(options: UploadRequestOptions) {
 //   const file = options.file
 async function calcHashInWorker(chunks: Blob[]): Promise<string> {
@@ -97,8 +96,9 @@ async function handleUpload() {
   const pickedChunks = pickChunks(chunks)
 
   const fileHash = await calcHashInWorker(pickedChunks)
-  const { shouldUpload, message, uploadedChunks = [], fileUrl } = await checkExist(fileHash)
+  const { shouldUpload, message, uploadedChunks = [], fileUrl = '' } = await checkExist(fileHash)
   if (shouldUpload) {
+    downloadUrl.value = ''
     // 需要上传, 则上传文件 ，分片都已上传，则直接合并
     progressMap.uploadedChunks = uploadedChunks.length
     if (uploadedChunks.length === chunks.length) {
@@ -106,16 +106,19 @@ async function handleUpload() {
     }
     else {
       await uploadChunks(chunks, fileHash, uploadedChunks)
+      ElNotification({
+        title: '所有分片上传成功',
+        type: 'success',
+      })
       await mergeRequest(file.name, fileHash)
     }
   }
   else {
+    downloadUrl.value = fileUrl
     ElNotification({
       title: message,
       type: 'warning',
     })
-    if (videoRef.value && fileUrl)
-      videoRef.value.src = fileUrl
   }
 }
 
@@ -123,12 +126,12 @@ const isPause = ref(false)
 
 function handleControl() {
   isPause.value = !isPause.value
-  // 继续上传
+  // 暂停上传
   if (isPause.value) {
     controllers.forEach(controller => controller.abort())
   }
   else {
-    // 暂停上传
+    // 继续上传
     handleUpload()
   }
 }
@@ -145,7 +148,6 @@ function createChunks(file: File) {
     chunks.push({
       name: `${chunks.length}-${file.name}`,
       file: file.slice(cur, end),
-      range: `${cur}-${end - 1}`,
       size: formatSize(end - cur),
     })
   }
@@ -237,8 +239,7 @@ async function mergeRequest(fileName: string, fileHash: string) {
       title: message,
       type: 'success',
     })
-    if (videoRef.value)
-      videoRef.value.src = fileUrl
+    downloadUrl.value = fileUrl
   }
 }
 </script>
@@ -254,9 +255,9 @@ async function mergeRequest(fileName: string, fileHash: string) {
     </button>
     <div my3 text-sm space-y-3>
       <p flex-start-center space-x-3 text-left>
-        <span>文件大小:</span><span w-20>{{ formatSize(progressMap.fileSize) }}</span>
+        <span>文件大小:</span><span w-20>{{ fileSize }}</span>
         已经上传: <span w-20>{{ uploadSize }}</span>
-        上传速度: <span w-20>{{ uploadSpeed }} </span>
+        上传速度: <span min-w-24>{{ uploadSpeed }} </span>
         剩余时间: <span> {{ restTime }}</span>
       </p>
       <p flex>
@@ -272,27 +273,15 @@ async function mergeRequest(fileName: string, fileHash: string) {
         <el-progress :percentage="uploadProgress" :stroke-width="10" flex-1 />
       </p>
     </div>
-    <video ref="videoRef" mt-5 mxa w-200 src="" muted controls />
+    <a v-show="downloadUrl" :href="downloadUrl" text-blue underline>下载链接</a>
     <!-- <el-upload drag :http-request="handleUpload">
       <div class="el-upload__text h-30 flex-center">
         拖拽文件到此 <em> 或点击上传</em>
       </div>
       <template #tip>
-        <div my3 text-sm space-y-3>
-          <p flex-start-center space-x-3>
-            <span>文件大小: {{ progressMap.fileSize }}</span> <span>已经上传: </span> <span>当前速度: </span> <span>剩余时间: </span>
-          </p>
-          <p flex>
-            <span>切片进度：</span>
-            <el-progress :percentage="progressMap.createChunks" :stroke-width="10" flex-1 />
-          </p>
-          <p flex>
-            <span>HASH进度：</span>
-            <el-progress :percentage="progressMap.calculateHash" :stroke-width="10" flex-1 />
-          </p>
-        </div>
-      </template>
-</el-upload> -->
+            info
+          </template>
+    </el-upload> -->
   </div>
 </template>
 
