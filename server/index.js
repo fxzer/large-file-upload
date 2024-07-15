@@ -1,4 +1,6 @@
 const path = require('node:path')
+const fs = require('node:fs')
+const process = require('node:process')
 const express = require('express')
 const multipart = require('multiparty')
 const fse = require('fs-extra')
@@ -124,9 +126,30 @@ app.post(API.merge, async (req, res) => {
     readStream.pipe(writeStream)
   }))
   await Promise.all(mergePromises)
-  fse.remove(chunkDir)
+
+  const CLIENT_OS = detectOS()
+  if (CLIENT_OS === 'mac') {
+    fs.rmSync(chunkDir, { recursive: true, force: true })
+  }
+  else {
+    await fs.remove(chunkDir)
+  }
+
   res.json({ ...UPLOAD_INFO.MERGE_SUCCESS, fileUrl: `${SERVER_URL}/upload/${fileHash}.${fileExt}` })
 })
+function detectOS() {
+  const platform = process.platform
+  if (platform === 'win32') {
+    return 'windows'
+  }
+  else if (platform === 'darwin') {
+    return 'mac'
+  }
+  else if (platform === 'linux') {
+    return 'linux'
+  }
+  return platform
+}
 
 // 取消上传
 app.post('/cancel', async (req, res) => {
@@ -135,7 +158,13 @@ app.post('/cancel', async (req, res) => {
   if (fse.existsSync(chunkDir)) {
     try {
       // FIXME: 无法删干净
-      await fse.remove(chunkDir)
+      const CLIENT_OS = detectOS()
+      if (CLIENT_OS === 'mac') {
+        fs.rmSync(chunkDir, { recursive: true, force: true })
+      }
+      else {
+        fs.remove(chunkDir)
+      }
       res.status(200).json(UPLOAD_INFO.CANCEL_SUCCESS)
     }
     catch {
