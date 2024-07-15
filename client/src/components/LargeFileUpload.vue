@@ -19,26 +19,43 @@ interface Chunk {
   size: string
 }
 
+interface FileInfo {
+  file: File
+  hash: string
+  progress: number
+  fileUrl: string
+  totalChunk: number
+  uploadedCount: number
+  isPause: boolean
+  isExist: boolean
+  chunks: Chunk[]
+  uploadedChunks: number[]
+  controllers: AbortController[]
+  shouldUpload: boolean
+}
+
 const inputRef = ref<HTMLInputElement | null>(null)
 
-const filesList = ref<any>([])
+const filesList = ref<FileInfo[]>([])
 
-function getCurrentByHash(hash: string) {
-  return filesList.value.find((item: any) => item.hash === hash)
+function getCurrentByHash(hash: string): FileInfo | undefined {
+  return filesList.value.find((item: FileInfo) => item.hash === hash)
 }
 
 async function handleUpload() {
-  const files: any = inputRef.value!.files
+  if (!inputRef.value || !inputRef.value.files)
+    return
+  const files: FileList = inputRef.value!.files
   if (!files)
     return
-  for await (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
     await handlePreUpload(file)
   }
-  const newFileList = filesList.value.filter((item: any) => !item.fileUrl)
+
+  const newFileList = filesList.value.filter((item: FileInfo) => !item.fileUrl)
   for (const fileInfo of newFileList) {
-    if (fileInfo.shouldUpload) {
-      await uploadFile(fileInfo)
-    }
+    await uploadFile(fileInfo)
   }
 }
 
@@ -56,17 +73,16 @@ async function handlePreUpload(file: File) {
   const fileHash = await calcHashInWorker(pickedChunks)
 
   const { shouldUpload, message, uploadedChunks = [] } = await checkExist(fileHash)
-  let fileInfo: any = {}
+  let fileInfo = getCurrentByHash(fileHash)
   if (shouldUpload) {
-    fileInfo = getCurrentByHash(fileHash)
     if (fileInfo) {
       ElNotification({
-        title: '文件已在列表',
+        title: `【${file.name}】文件已在列表`,
         type: 'warning',
       })
     }
     else {
-    // 表格中没有，并且需要上传 才放入表格
+    // 需要上传且表格中没有， 才放入表格
       fileInfo = {
         file,
         hash: fileHash,
@@ -76,6 +92,7 @@ async function handlePreUpload(file: File) {
         uploadedCount: uploadedChunks.length,
         isPause: false,
         isExist: false,
+        shouldUpload: true,
         chunks,
         uploadedChunks,
         controllers: [],
@@ -85,11 +102,10 @@ async function handlePreUpload(file: File) {
   }
   else {
     ElNotification({
-      title: `${message}（${file.name}）`,
+      title: `【${file.name}】${message}`,
       type: 'warning',
     })
   }
-  fileInfo.shouldUpload = shouldUpload
   return fileInfo
 }
 
@@ -125,21 +141,23 @@ async function uploadFile(fileInfo: any) {
 function handleControl(row: any) {
   // FIXME: 暂停后继续上传，会导致文件上传完毕后打不开
   const currentRow = getCurrentByHash(row.hash)
-  currentRow.isPause = !currentRow.isPause
+  if (currentRow) {
+    currentRow.isPause = !currentRow.isPause
 
-  // 暂停上传
-  if (currentRow.isPause) {
-    currentRow.controllers.forEach(controller => controller.abort())
-  }
-  else {
+    // 暂停上传
+    if (currentRow.isPause) {
+      currentRow.controllers.forEach((controller: AbortController) => controller.abort())
+    }
+    else {
     // 继续上传
-    uploadFile(currentRow)
+      uploadFile(currentRow)
+    }
   }
 }
-function cancelUpload(row: any) {
+function cancelUpload(row: FileInfo) {
   row.isPause = false
   handleControl(row)
-  filesList.value = filesList.value.filter((item: any) => item !== row)
+  filesList.value = filesList.value.filter(item => item !== row)
   http.post(API.cancel, { fileHash: row.hash })
 }
 
@@ -201,43 +219,44 @@ async function currencyUpload(formDatas: FormData[], hash: string) {
   const max = 6 // 设置浏览器运行最大并发数  目前6个为当前的主流
   const taskPool: Array<Promise<any>> = []
   const currentRow = getCurrentByHash(hash)
-
-  while (index < formDatas.length) {
+  if (currentRow) {
+    while (index < formDatas.length) {
     // 生成一个任务
-    const controller = new AbortController()
-    const task = http.post(API.upload, formDatas[index], {
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    })
-    if (currentRow && currentRow.isPause) {
-      break
+      const controller = new AbortController()
+      const task = http.post(API.upload, formDatas[index], {
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      })
+      if (currentRow.isPause) {
+        break
+      }
+      index++
+      taskPool.push(task)
+      currentRow.controllers.push(controller)
+
+      // 任务完成后从任务池中移除
+      task.then(() => {
+        taskPool.splice(taskPool.findIndex(item => item === task))
+        currentRow.controllers.splice(currentRow.controllers.findIndex((item: AbortController) => item === controller))
+        currentRow.uploadedCount++
+        currentRow.progress = Math.floor((currentRow.uploadedCount / currentRow.totalChunk) * 98)
+      })
+      // 当任务池中的任务数量达到最大并发数时，等待其中一个任务完成后再继续添加任务
+      if (taskPool.length === max) {
+        await Promise.race(taskPool)
+      }
     }
-    index++
-    taskPool.push(task)
-    currentRow.controllers.push(controller)
 
-    // 任务完成后从任务池中移除
-    task.then(() => {
-      taskPool.splice(taskPool.findIndex(item => item === task))
-      currentRow.controllers.splice(currentRow.controllers.findIndex(item => item === controller))
-      currentRow.uploadedCount++
-
-      currentRow.progress = Math.floor((currentRow.uploadedCount / currentRow.totalChunk) * 98)
+    await Promise.all(taskPool)
+    ElNotification({
+      title: `【${currentRow.file.name}】所有分片上传成功`,
+      type: 'success',
     })
 
-    if (taskPool.length === max) {
-      await Promise.race(taskPool) // 竞赛等出一个执行完毕的请求
-    }
+    await mergeRequest(currentRow.file.name, hash)
   }
-
-  await Promise.all(taskPool)
-  ElNotification({
-    title: '所有分片上传成功',
-    type: 'success',
-  })
-  await mergeRequest(currentRow.file.name, hash)
 }
 
 // 合并请求
@@ -246,12 +265,12 @@ async function mergeRequest(fileName: string, fileHash: string) {
   const currentRow = getCurrentByHash(fileHash)
 
   if (success) {
-    currentRow.progress = 100
+    currentRow!.fileUrl = fileUrl
+    currentRow!.progress = 100
     ElNotification({
-      title: message,
+      title: `【${currentRow!.file.name}】${message}`,
       type: 'success',
     })
-    currentRow.fileUrl = fileUrl
   }
 }
 </script>
